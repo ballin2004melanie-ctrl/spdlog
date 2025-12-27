@@ -13,11 +13,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Install deps (GCC 13 + gcov 13 + gcovr)
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ python3-pip
-          # 用 pip 装最新版 gcovr，避免 apt 版本差异导致参数行为不一致
+          # 固定 gcc/g++/gcov 版本，避免 gcovr 解析输出时出现兼容性问题
+          sudo apt-get install -y cmake ninja-build gcc-13 g++-13 gcov-13 python3-pip
+          # 用 pip 装最新版 gcovr，减少 apt 自带版本差异
           pip3 install --upgrade gcovr
 
       - name: Configure (tests + coverage flags)
@@ -25,6 +26,8 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DSPDLOG_BUILD_TESTS=ON \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
             -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
             -DCMAKE_C_FLAGS="--coverage -O0 -g" \
             -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
@@ -40,12 +43,16 @@ jobs:
         run: |
           cd build
 
-          # 1) HTML 详细报告（注意：用 -o 指定输出文件）
+          # HTML 详细报告：指定 gcov-13，并忽略少量解析异常（否则会 exit code 64）
           gcovr -r .. --print-summary \
+            --gcov-executable gcov-13 \
+            --gcov-ignore-parse-errors=all \
             --html --html-details -o coverage.html
 
-          # 2) Cobertura XML（同样用 -o 指定输出文件）
+          # Cobertura XML：同样指定 gcov-13 并忽略解析异常
           gcovr -r .. --print-summary \
+            --gcov-executable gcov-13 \
+            --gcov-ignore-parse-errors=all \
             --cobertura-pretty -o cobertura.xml
 
       - name: Upload coverage artifacts
