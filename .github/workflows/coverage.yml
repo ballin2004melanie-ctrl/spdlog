@@ -2,17 +2,23 @@ name: spdlog - coverage (gcovr)
 
 on:
   workflow_dispatch:
+  push:
+  pull_request:
 
 jobs:
   coverage:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ gcovr
+          sudo apt-get install -y cmake ninja-build g++ python3-pip
+          # 用 pip 装最新版 gcovr，避免 apt 版本差异导致参数行为不一致
+          pip3 install --upgrade gcovr
 
       - name: Configure (tests + coverage flags)
         run: |
@@ -33,11 +39,14 @@ jobs:
       - name: Generate coverage reports
         run: |
           cd build
-          # -r .. ：以源码根目录为基准统计
-          # --print-summary ：在日志中输出汇总（写报告非常好用）
+
+          # 1) HTML 详细报告（注意：用 -o 指定输出文件）
           gcovr -r .. --print-summary \
-            --html-details coverage.html \
-            --xml-pretty cobertura.xml
+            --html --html-details -o coverage.html
+
+          # 2) Cobertura XML（同样用 -o 指定输出文件）
+          gcovr -r .. --print-summary \
+            --cobertura-pretty -o cobertura.xml
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
