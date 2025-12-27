@@ -34,28 +34,46 @@ jobs:
           set -eux
           cmake --build build
 
+      - name: Locate spdlog-utests binary
+        run: |
+          set -eux
+          # 自动找可执行文件（不同平台/生成器路径可能不同）
+          UTESTS="$(find build -type f -name spdlog-utests -perm -111 | head -n 1 || true)"
+          if [ -z "$UTESTS" ]; then
+            echo "ERROR: spdlog-utests binary not found."
+            echo "Dump build tree (top 3 levels):"
+            find build -maxdepth 3 -type f | head -n 200
+            exit 1
+          fi
+          echo "Found utests: $UTESTS"
+          echo "UTESTS=$UTESTS" >> $GITHUB_ENV
+
       - name: Prepare incremental test groups (Catch2)
         run: |
           set -eux
           cd build
 
-          # 1) 列出 Catch2 的 test case 名称（每行一个）
-          # Catch2 支持 --list-test-names-only 和 --input-file（-f） :contentReference[oaicite:1]{index=1}
-          ./tests/spdlog-utests --list-test-names-only > all_tests.txt
+          echo "Use utests: $UTESTS"
+
+          # 1) 列出 Catch2 test case 名称
+          # Catch2 v2 支持 --list-test-names-only :contentReference[oaicite:1]{index=1}
+          # 若不支持则 fallback 到 --list-tests --verbosity quiet（Catch2 v3 常用方式）:contentReference[oaicite:2]{index=2}
+          if "$UTESTS" --list-test-names-only > all_tests.txt 2>/dev/null; then
+            echo "Listed tests via --list-test-names-only"
+          else
+            echo "Fallback: --list-tests --verbosity quiet"
+            "$UTESTS" --list-tests --verbosity quiet > all_tests.txt
+          fi
+
+          # 清理空行
+          sed -i '/^\s*$/d' all_tests.txt
 
           echo "Total testcases:"
           wc -l all_tests.txt
 
-          # 2) 把 testcases 平均分成 5 组（你也可以改成 3/4/6 组）
+          # 2) 分成 5 组（可改成 3 组：把 5 改成 3）
           mkdir -p groups
-          split -n l/5 all_tests.txt groups/group_
-
-          # 给文件加上明确后缀，便于循环
-          i=1
-          for f in groups/group_*; do
-            mv "$f" "groups/group_${i}.txt"
-            i=$((i+1))
-          done
+          split -d -n l/5 all_tests.txt groups/group_ --additional-suffix=.txt
 
           ls -l groups
 
@@ -64,30 +82,27 @@ jobs:
           set -eux
           cd build
 
-          # 清空旧的覆盖率数据，确保从 0 开始累计
+          # 从 0 开始累计覆盖率
           find . -name "*.gcda" -delete || true
 
-          # CSV 表头：阶段,lines,functions,branches
           echo "stage,lines_pct,functions_pct,branches_pct" > coverage_increment.csv
 
-          # 逐组运行：第1组 → summary1；再跑第2组（不清 gcda）→ summary2；... 累计覆盖率
-          for i in 1 2 3 4 5; do
-            echo "=== Running group $i ==="
+          # 按组累计：1→2→3→4→5
+          stage=1
+          for f in groups/group_*.txt; do
+            echo "=== Running stage $stage with file: $f ==="
+            # Catch2 支持 -f/--input-file 来运行文件中列出的 testcases :contentReference[oaicite:3]{index=3}
+            "$UTESTS" -f "$f"
 
-            # 用 Catch2 的 --input-file（-f）跑指定 testcases（每行一个 test name）
-            ./tests/spdlog-utests -f "groups/group_${i}.txt"
-
-            # 生成当下累计覆盖率 summary（不生成 html，先要数据点）
-            out="$(gcovr -r .. --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all)"
-
+            out="$(gcovr -r .. --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all || true)"
             echo "$out"
 
-            # 解析三行百分比
             lines_pct="$(echo "$out" | grep -E '^lines:' | awk '{print $2}' | tr -d '%')"
             func_pct="$(echo "$out" | grep -E '^functions:' | awk '{print $2}' | tr -d '%')"
             br_pct="$(echo "$out" | grep -E '^branches:' | awk '{print $2}' | tr -d '%')"
 
-            echo "${i},${lines_pct},${func_pct},${br_pct}" >> coverage_increment.csv
+            echo "${stage},${lines_pct},${func_pct},${br_pct}" >> coverage_increment.csv
+            stage=$((stage+1))
           done
 
           echo "=== Increment CSV ==="
@@ -104,12 +119,12 @@ jobs:
 
           stages, lines, funcs, brs = [], [], [], []
           with open("coverage_increment.csv", newline="") as f:
-            r = csv.DictReader(f)
-            for row in r:
-              stages.append(int(row["stage"]))
-              lines.append(float(row["lines_pct"]))
-              funcs.append(float(row["functions_pct"]))
-              brs.append(float(row["branches_pct"]))
+              r = csv.DictReader(f)
+              for row in r:
+                  stages.append(int(row["stage"]))
+                  lines.append(float(row["lines_pct"]))
+                  funcs.append(float(row["functions_pct"]))
+                  brs.append(float(row["branches_pct"]))
 
           plt.figure()
           plt.plot(stages, lines, marker="o", label="Lines")
@@ -124,7 +139,7 @@ jobs:
           print("Saved: coverage_increment.png")
           PY
 
-      - name: Generate final HTML report (optional)
+      - name: Generate final HTML report
         run: |
           set -eux
           cd build
