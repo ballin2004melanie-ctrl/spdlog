@@ -7,51 +7,55 @@ on:
 
 jobs:
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install deps (GCC 13 + gcov 13 + gcovr)
+      - name: Install deps
         run: |
+          set -eux
           sudo apt-get update
-          # 固定 gcc/g++/gcov 版本，避免 gcovr 解析输出时出现兼容性问题
-          sudo apt-get install -y cmake ninja-build gcc-13 g++-13 gcov-13 python3-pip
-          # 用 pip 装最新版 gcovr，减少 apt 自带版本差异
+          # 不强制装 gcc-13，避免 apt exit code 100（找不到包）
+          sudo apt-get install -y cmake ninja-build g++ python3-pip
           pip3 install --upgrade gcovr
 
       - name: Configure (tests + coverage flags)
         run: |
+          set -eux
           cmake -S . -B build -G Ninja \
             -DSPDLOG_BUILD_TESTS=ON \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=gcc-13 \
-            -DCMAKE_CXX_COMPILER=g++-13 \
             -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
             -DCMAKE_C_FLAGS="--coverage -O0 -g" \
             -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
             -DCMAKE_SHARED_LINKER_FLAGS="--coverage"
 
       - name: Build
-        run: cmake --build build
+        run: |
+          set -eux
+          cmake --build build
 
       - name: Run tests (generate coverage data)
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          set -eux
+          ctest --test-dir build --output-on-failure
 
       - name: Generate coverage reports
         run: |
+          set -eux
           cd build
 
-          # HTML 详细报告：指定 gcov-13，并忽略少量解析异常（否则会 exit code 64）
+          # HTML 详细报告
           gcovr -r .. --print-summary \
-            --gcov-executable gcov-13 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors=all \
             --html --html-details -o coverage.html
 
-          # Cobertura XML：同样指定 gcov-13 并忽略解析异常
+          # Cobertura XML
           gcovr -r .. --print-summary \
-            --gcov-executable gcov-13 \
+            --gcov-executable gcov \
             --gcov-ignore-parse-errors=all \
             --cobertura-pretty -o cobertura.xml
 
