@@ -1,0 +1,141 @@
+name: spdlog - incremental coverage (gcovr)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  incremental_coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ python3-pip
+          pip3 install --upgrade gcovr matplotlib
+
+      - name: Configure (tests + coverage flags)
+        run: |
+          set -eux
+          cmake -S . -B build -G Ninja \
+            -DSPDLOG_BUILD_TESTS=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_C_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
+            -DCMAKE_SHARED_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: |
+          set -eux
+          cmake --build build
+
+      - name: Prepare incremental test groups (Catch2)
+        run: |
+          set -eux
+          cd build
+
+          # 1) 列出 Catch2 的 test case 名称（每行一个）
+          # Catch2 支持 --list-test-names-only 和 --input-file（-f） :contentReference[oaicite:1]{index=1}
+          ./tests/spdlog-utests --list-test-names-only > all_tests.txt
+
+          echo "Total testcases:"
+          wc -l all_tests.txt
+
+          # 2) 把 testcases 平均分成 5 组（你也可以改成 3/4/6 组）
+          mkdir -p groups
+          split -n l/5 all_tests.txt groups/group_
+
+          # 给文件加上明确后缀，便于循环
+          i=1
+          for f in groups/group_*; do
+            mv "$f" "groups/group_${i}.txt"
+            i=$((i+1))
+          done
+
+          ls -l groups
+
+      - name: Run groups cumulatively + collect summaries
+        run: |
+          set -eux
+          cd build
+
+          # 清空旧的覆盖率数据，确保从 0 开始累计
+          find . -name "*.gcda" -delete || true
+
+          # CSV 表头：阶段,lines,functions,branches
+          echo "stage,lines_pct,functions_pct,branches_pct" > coverage_increment.csv
+
+          # 逐组运行：第1组 → summary1；再跑第2组（不清 gcda）→ summary2；... 累计覆盖率
+          for i in 1 2 3 4 5; do
+            echo "=== Running group $i ==="
+
+            # 用 Catch2 的 --input-file（-f）跑指定 testcases（每行一个 test name）
+            ./tests/spdlog-utests -f "groups/group_${i}.txt"
+
+            # 生成当下累计覆盖率 summary（不生成 html，先要数据点）
+            out="$(gcovr -r .. --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all)"
+
+            echo "$out"
+
+            # 解析三行百分比
+            lines_pct="$(echo "$out" | grep -E '^lines:' | awk '{print $2}' | tr -d '%')"
+            func_pct="$(echo "$out" | grep -E '^functions:' | awk '{print $2}' | tr -d '%')"
+            br_pct="$(echo "$out" | grep -E '^branches:' | awk '{print $2}' | tr -d '%')"
+
+            echo "${i},${lines_pct},${func_pct},${br_pct}" >> coverage_increment.csv
+          done
+
+          echo "=== Increment CSV ==="
+          cat coverage_increment.csv
+
+      - name: Plot incremental coverage chart
+        run: |
+          set -eux
+          cd build
+
+          python3 - <<'PY'
+          import csv
+          import matplotlib.pyplot as plt
+
+          stages, lines, funcs, brs = [], [], [], []
+          with open("coverage_increment.csv", newline="") as f:
+            r = csv.DictReader(f)
+            for row in r:
+              stages.append(int(row["stage"]))
+              lines.append(float(row["lines_pct"]))
+              funcs.append(float(row["functions_pct"]))
+              brs.append(float(row["branches_pct"]))
+
+          plt.figure()
+          plt.plot(stages, lines, marker="o", label="Lines")
+          plt.plot(stages, funcs, marker="o", label="Functions")
+          plt.plot(stages, brs, marker="o", label="Branches")
+          plt.xlabel("Cumulative test group stage")
+          plt.ylabel("Coverage (%)")
+          plt.title("Incremental Coverage (spdlog-utests grouped)")
+          plt.legend()
+          plt.grid(True, linestyle="--", linewidth=0.5)
+          plt.savefig("coverage_increment.png", dpi=200, bbox_inches="tight")
+          print("Saved: coverage_increment.png")
+          PY
+
+      - name: Generate final HTML report (optional)
+        run: |
+          set -eux
+          cd build
+          gcovr -r .. --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all \
+            --html --html-details -o coverage_final.html
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spdlog-incremental-coverage
+          path: |
+            build/coverage_increment.csv
+            build/coverage_increment.png
+            build/coverage_final.html
