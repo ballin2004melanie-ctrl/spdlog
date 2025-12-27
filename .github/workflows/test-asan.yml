@@ -1,0 +1,30 @@
+name: spdlog - tests (ASan)
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  test_asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: Configure (tests + ASan)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DSPDLOG_BUILD_TESTS=ON \
+            -DSPDLOG_SANITIZE_ADDRESS=ON \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
