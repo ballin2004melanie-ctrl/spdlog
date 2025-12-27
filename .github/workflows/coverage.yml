@@ -1,0 +1,48 @@
+name: spdlog - coverage (gcovr)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ gcovr
+
+      - name: Configure (tests + coverage flags)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DSPDLOG_BUILD_TESTS=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_C_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
+            -DCMAKE_SHARED_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests (generate coverage data)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Generate coverage reports
+        run: |
+          cd build
+          # -r .. ：以源码根目录为基准统计
+          # --print-summary ：在日志中输出汇总（写报告非常好用）
+          gcovr -r .. --print-summary \
+            --html-details coverage.html \
+            --xml-pretty cobertura.xml
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spdlog-coverage
+          path: |
+            build/coverage.html
+            build/cobertura.xml
