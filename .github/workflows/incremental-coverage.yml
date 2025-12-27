@@ -40,12 +40,9 @@ jobs:
           UTESTS_REL="$(find build -type f -name spdlog-utests -perm -111 | head -n 1 || true)"
           if [ -z "$UTESTS_REL" ]; then
             echo "ERROR: spdlog-utests binary not found."
-            echo "Dump build tree (top 3 levels):"
             find build -maxdepth 3 -type f | head -n 200
             exit 1
           fi
-
-          # 关键：转成绝对路径，避免后续 cd 导致 build/build/... 这种错
           UTESTS_ABS="$(realpath "$UTESTS_REL")"
           echo "Found utests: $UTESTS_ABS"
           echo "UTESTS_ABS=$UTESTS_ABS" >> "$GITHUB_ENV"
@@ -53,10 +50,10 @@ jobs:
       - name: Prepare incremental test groups (Catch2)
         run: |
           set -eux
-
           mkdir -p build/groups
 
-          # 1) 列出 Catch2 的 test case 名称
+          # 1) 列出 Catch2 test case 名称
+          # 优先用 --list-test-names-only，失败则 fallback
           if "$UTESTS_ABS" --list-test-names-only > build/all_tests.txt 2>/dev/null; then
             echo "Listed tests via --list-test-names-only"
           else
@@ -64,15 +61,12 @@ jobs:
             "$UTESTS_ABS" --list-tests --verbosity quiet > build/all_tests.txt
           fi
 
-          # 清理空行
           sed -i '/^\s*$/d' build/all_tests.txt
-
           echo "Total testcases:"
           wc -l build/all_tests.txt
 
-          # 2) 平均分成 5 组（想少点就改成 l/3）
+          # 2) 分成 5 组（要更少就把 5 改成 3）
           split -d -n l/5 build/all_tests.txt build/groups/group_ --additional-suffix=.txt
-
           ls -l build/groups
 
       - name: Run groups cumulatively + collect summaries
@@ -84,14 +78,29 @@ jobs:
 
           echo "stage,lines_pct,functions_pct,branches_pct" > build/coverage_increment.csv
 
+          # 关键：排除第三方依赖目录 build/_deps，避免 Catch2 的 gcno/gcda 导致 gcov 出错
+          # --exclude-directories 在搜索 raw coverage 数据时就会跳过目录 :contentReference[oaicite:2]{index=2}
+          EXCLUDES=(
+            --exclude-directories "build/_deps"
+            --exclude-directories "build/_deps/.*"
+            --exclude "build/_deps/.*"
+            --exclude "include/spdlog/fmt/bundled/.*"
+          )
+
           stage=1
           for f in build/groups/group_*.txt; do
             echo "=== Running stage $stage with file: $f ==="
 
-            # Catch2 支持 -f/--input-file 跑子集
+            # Catch2: -f/--input-file 跑子集
             "$UTESTS_ABS" -f "$f"
 
-            out="$(gcovr -r . --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all || true)"
+            # 关键：加上 --gcov-ignore-errors=all，忽略 gcov 调用错误 :contentReference[oaicite:3]{index=3}
+            out="$(gcovr -r . --print-summary \
+              --gcov-executable gcov \
+              --gcov-ignore-errors all \
+              --gcov-ignore-parse-errors all \
+              "${EXCLUDES[@]}")"
+
             echo "$out"
 
             lines_pct="$(echo "$out" | grep -E '^lines:' | awk '{print $2}' | tr -d '%')"
@@ -108,7 +117,6 @@ jobs:
       - name: Plot incremental coverage chart
         run: |
           set -eux
-
           python3 - <<'PY'
           import csv
           import matplotlib.pyplot as plt
@@ -138,7 +146,13 @@ jobs:
       - name: Generate final HTML report
         run: |
           set -eux
-          gcovr -r . --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all \
+          gcovr -r . --print-summary \
+            --gcov-executable gcov \
+            --gcov-ignore-errors all \
+            --gcov-ignore-parse-errors all \
+            --exclude-directories "build/_deps" \
+            --exclude "build/_deps/.*" \
+            --exclude "include/spdlog/fmt/bundled/.*" \
             --html --html-details -o build/coverage_final.html
 
       - name: Upload artifacts
