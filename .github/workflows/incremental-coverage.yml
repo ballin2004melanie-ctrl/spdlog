@@ -34,91 +34,87 @@ jobs:
           set -eux
           cmake --build build
 
-      - name: Locate spdlog-utests binary
+      - name: Locate spdlog-utests binary (absolute path)
         run: |
           set -eux
-          # 自动找可执行文件（不同平台/生成器路径可能不同）
-          UTESTS="$(find build -type f -name spdlog-utests -perm -111 | head -n 1 || true)"
-          if [ -z "$UTESTS" ]; then
+          UTESTS_REL="$(find build -type f -name spdlog-utests -perm -111 | head -n 1 || true)"
+          if [ -z "$UTESTS_REL" ]; then
             echo "ERROR: spdlog-utests binary not found."
             echo "Dump build tree (top 3 levels):"
             find build -maxdepth 3 -type f | head -n 200
             exit 1
           fi
-          echo "Found utests: $UTESTS"
-          echo "UTESTS=$UTESTS" >> $GITHUB_ENV
+
+          # 关键：转成绝对路径，避免后续 cd 导致 build/build/... 这种错
+          UTESTS_ABS="$(realpath "$UTESTS_REL")"
+          echo "Found utests: $UTESTS_ABS"
+          echo "UTESTS_ABS=$UTESTS_ABS" >> "$GITHUB_ENV"
 
       - name: Prepare incremental test groups (Catch2)
         run: |
           set -eux
-          cd build
 
-          echo "Use utests: $UTESTS"
+          mkdir -p build/groups
 
-          # 1) 列出 Catch2 test case 名称
-          # Catch2 v2 支持 --list-test-names-only :contentReference[oaicite:1]{index=1}
-          # 若不支持则 fallback 到 --list-tests --verbosity quiet（Catch2 v3 常用方式）:contentReference[oaicite:2]{index=2}
-          if "$UTESTS" --list-test-names-only > all_tests.txt 2>/dev/null; then
+          # 1) 列出 Catch2 的 test case 名称
+          if "$UTESTS_ABS" --list-test-names-only > build/all_tests.txt 2>/dev/null; then
             echo "Listed tests via --list-test-names-only"
           else
             echo "Fallback: --list-tests --verbosity quiet"
-            "$UTESTS" --list-tests --verbosity quiet > all_tests.txt
+            "$UTESTS_ABS" --list-tests --verbosity quiet > build/all_tests.txt
           fi
 
           # 清理空行
-          sed -i '/^\s*$/d' all_tests.txt
+          sed -i '/^\s*$/d' build/all_tests.txt
 
           echo "Total testcases:"
-          wc -l all_tests.txt
+          wc -l build/all_tests.txt
 
-          # 2) 分成 5 组（可改成 3 组：把 5 改成 3）
-          mkdir -p groups
-          split -d -n l/5 all_tests.txt groups/group_ --additional-suffix=.txt
+          # 2) 平均分成 5 组（想少点就改成 l/3）
+          split -d -n l/5 build/all_tests.txt build/groups/group_ --additional-suffix=.txt
 
-          ls -l groups
+          ls -l build/groups
 
       - name: Run groups cumulatively + collect summaries
         run: |
           set -eux
-          cd build
 
           # 从 0 开始累计覆盖率
-          find . -name "*.gcda" -delete || true
+          find build -name "*.gcda" -delete || true
 
-          echo "stage,lines_pct,functions_pct,branches_pct" > coverage_increment.csv
+          echo "stage,lines_pct,functions_pct,branches_pct" > build/coverage_increment.csv
 
-          # 按组累计：1→2→3→4→5
           stage=1
-          for f in groups/group_*.txt; do
+          for f in build/groups/group_*.txt; do
             echo "=== Running stage $stage with file: $f ==="
-            # Catch2 支持 -f/--input-file 来运行文件中列出的 testcases :contentReference[oaicite:3]{index=3}
-            "$UTESTS" -f "$f"
 
-            out="$(gcovr -r .. --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all || true)"
+            # Catch2 支持 -f/--input-file 跑子集
+            "$UTESTS_ABS" -f "$f"
+
+            out="$(gcovr -r . --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all || true)"
             echo "$out"
 
             lines_pct="$(echo "$out" | grep -E '^lines:' | awk '{print $2}' | tr -d '%')"
             func_pct="$(echo "$out" | grep -E '^functions:' | awk '{print $2}' | tr -d '%')"
             br_pct="$(echo "$out" | grep -E '^branches:' | awk '{print $2}' | tr -d '%')"
 
-            echo "${stage},${lines_pct},${func_pct},${br_pct}" >> coverage_increment.csv
+            echo "${stage},${lines_pct},${func_pct},${br_pct}" >> build/coverage_increment.csv
             stage=$((stage+1))
           done
 
           echo "=== Increment CSV ==="
-          cat coverage_increment.csv
+          cat build/coverage_increment.csv
 
       - name: Plot incremental coverage chart
         run: |
           set -eux
-          cd build
 
           python3 - <<'PY'
           import csv
           import matplotlib.pyplot as plt
 
           stages, lines, funcs, brs = [], [], [], []
-          with open("coverage_increment.csv", newline="") as f:
+          with open("build/coverage_increment.csv", newline="") as f:
               r = csv.DictReader(f)
               for row in r:
                   stages.append(int(row["stage"]))
@@ -135,16 +131,15 @@ jobs:
           plt.title("Incremental Coverage (spdlog-utests grouped)")
           plt.legend()
           plt.grid(True, linestyle="--", linewidth=0.5)
-          plt.savefig("coverage_increment.png", dpi=200, bbox_inches="tight")
-          print("Saved: coverage_increment.png")
+          plt.savefig("build/coverage_increment.png", dpi=200, bbox_inches="tight")
+          print("Saved: build/coverage_increment.png")
           PY
 
       - name: Generate final HTML report
         run: |
           set -eux
-          cd build
-          gcovr -r .. --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all \
-            --html --html-details -o coverage_final.html
+          gcovr -r . --print-summary --gcov-executable gcov --gcov-ignore-parse-errors=all \
+            --html --html-details -o build/coverage_final.html
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
